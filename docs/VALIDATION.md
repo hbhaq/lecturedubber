@@ -4,7 +4,7 @@
 
 - All **16 backend tests pass**, including trial upload-size cleanup, lecture quota and rejecting overlong media before paid transcription. Frontend TypeScript checking also passes.
 - The trial image combines a static frontend, API and worker on one persistent volume, with separate PostgreSQL and Redis services. Authentication is mandatory; startup refuses missing administrator settings or public origin.
-- Local static-export builds stalled without completion. Docker engine access remains unavailable in this session. The Railway image build, public login and end-to-end cloud processing are not yet verified.
+- Local static-export builds stalled without completion. Railway's Linux Docker build subsequently completed, including the 23-second Next.js static export and successful image push. PostgreSQL and Redis show Online in the trial project. Application startup correctly refused the missing public origin. Media volume and private service references are staged; administrator configuration, public login and end-to-end cloud processing remain unverified.
 - Source was successfully published to `hbhaq/lecturedubber`; secrets and lecture assets were excluded. No live AI provider test is claimed.
 
 ## Authentication and deployment update — 2026-10-17

@@ -56,4 +56,4 @@ Trial expiry or exhausted credits can stop services. Download exports before the
 
 ## Verification limits
 
-The static frontend export and backend limit/authentication tests are run locally. Actual Railway image build, Nginx configuration, service references, mounted-volume persistence, public HTTPS and resource use must be checked in the connected Railway project. A local test is not a successful cloud deployment.
+Backend limit/authentication tests pass locally. The Railway Docker image build and static frontend export completed on 2026-10-18; PostgreSQL and Redis show Online. Application startup refuses missing public-origin configuration as intended. Nginx routing, service references, mounted-volume persistence, public authentication and resource use still need runtime verification after the administrator settings are supplied. A successful image build is not a working public deployment.
