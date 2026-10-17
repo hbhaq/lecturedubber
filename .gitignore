@@ -3,6 +3,7 @@
 !.env.example
 *.zip
 **/node_modules/
+**/out/
 **/.next/
 **/.next-verify/
 **/.next*/

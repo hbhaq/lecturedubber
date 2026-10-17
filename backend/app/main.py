@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy import func
 from .db import init_db, Session, Lecture, Segment, Job
 from .storage import store
 from .pipeline import rows, asdict, invalidate
@@ -62,6 +63,9 @@ def create(value:Create):
     if value.mode not in ('live','demo'): raise HTTPException(400,'Choose demo or live')
     if value.mode=='live' and not os.getenv('OPENAI_API_KEY'): raise HTTPException(400,'Set OPENAI_API_KEY on the backend or choose demo mode.')
     with Session() as db:
+        limit=int(os.getenv('MAX_LECTURES','0'))
+        if limit and db.scalar(select(func.count()).select_from(Lecture))>=limit:
+            raise HTTPException(409,'This trial workspace allows one lecture at a time. Download your exports and delete the existing lecture first.')
         l=Lecture(**value.model_dump()); db.add(l); db.commit(); return asdict(l)
 @app.get('/lectures/{lid}')
 def detail(lid:str):
@@ -77,7 +81,15 @@ def upload(lid:str,file:UploadFile):
         suffix=Path(file.filename or '').suffix.lower()
         if suffix not in ('.mp4','.webm','.mov','.mkv','.m4v'): raise HTTPException(400,'Use MP4, WebM, MOV, MKV or M4V video.')
         key=f'{lid}/source{suffix}'; p=store.path(key); tmp=p.with_suffix('.upload')
-        with tmp.open('wb') as dest: shutil.copyfileobj(file.file,dest,1024*1024)
+        limit=int(os.getenv('MAX_UPLOAD_BYTES','0'));size=0
+        try:
+            with tmp.open('wb') as dest:
+                while chunk:=file.file.read(1024*1024):
+                    size+=len(chunk)
+                    if limit and size>limit: raise HTTPException(413,f'Trial uploads are limited to {limit//1048576} MB. Use a shorter or lower-resolution test recording.')
+                    dest.write(chunk)
+        except Exception:
+            tmp.unlink(missing_ok=True);raise
         tmp.replace(p); l.source=key; l.status='uploaded'; db.commit(); return {'source':key}
 @app.put('/lectures/{lid}/settings')
 def settings(lid:str,value:Settings):

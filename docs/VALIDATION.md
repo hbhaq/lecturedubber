@@ -1,5 +1,12 @@
 # Implementation verification
 
+## Railway trial preparation — 2026-10-18
+
+- All **16 backend tests pass**, including trial upload-size cleanup, lecture quota and rejecting overlong media before paid transcription. Frontend TypeScript checking also passes.
+- The trial image combines a static frontend, API and worker on one persistent volume, with separate PostgreSQL and Redis services. Authentication is mandatory; startup refuses missing administrator settings or public origin.
+- Local static-export builds stalled without completion. Docker engine access remains unavailable in this session. The Railway image build, public login and end-to-end cloud processing are not yet verified.
+- Source was successfully published to `hbhaq/lecturedubber`; secrets and lecture assets were excluded. No live AI provider test is claimed.
+
 ## Authentication and deployment update — 2026-10-17
 
 - **14 backend tests pass**: the original seven media/workflow tests plus seven authentication tests. New checks cover protected API/docs/download routes, authenticated mutations, CSRF and Origin enforcement, sign-in throttling, logout, expiration, credential rotation, salted password verification, secure production-cookie attributes, and startup refusing an unsafe public configuration.

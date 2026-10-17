@@ -1,0 +1,13 @@
+.git
+.env
+.env.*
+!.env.example
+**/node_modules
+**/out
+**/.next*
+**/__pycache__
+**/.pytest_cache
+**/data
+**/*.db
+**/*.tsbuildinfo
+*.zip

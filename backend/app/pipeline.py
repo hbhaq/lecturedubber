@@ -42,6 +42,9 @@ def execute(jid):
                 info=probe(source)
                 if not any(s['codec_type']=='video' for s in info['streams']): raise ValueError('Source needs a video stream.')
                 l.duration=float(info['format']['duration']); db.commit()
+                maximum=float(os.getenv('MAX_LECTURE_SECONDS','0'))
+                if maximum and l.duration>maximum:
+                    raise ValueError(f'Trial recordings are limited to {maximum:g} seconds. Delete this lecture and upload a shorter test video. No transcription request was made.')
                 total=min(30.,l.duration) if j.kind=='sample' else l.duration
                 all_segments=[]
                 for index in range(math.ceil(total/300)):

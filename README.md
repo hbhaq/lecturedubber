@@ -4,6 +4,8 @@ A local, single-user lecture dubbing application. Next.js/React/TypeScript/Tailw
 
 Optional single-administrator login and an HTTPS Docker deployment are now included. See [GitHub and hosting setup](docs/DEPLOYMENT.md). The local configuration remains unchanged until you explicitly enable authentication; production requires it.
 
+For a short-video evaluation on Railway, use the [Railway trial setup](docs/RAILWAY.md). Its separate image enforces two-minute, 50 MB, single-lecture limits; it is not intended for full lectures or guaranteed ongoing free hosting.
+
 ## Start with Docker (recommended)
 
 Install Docker Desktop with Linux containers and Docker Compose v2. Allow at least 4 CPU cores, 8 GB RAM, and ample disk space. Video intermediates can use several times the source size. FFmpeg, ffprobe, eSpeak NG, Python and Node are installed by the Dockerfiles.

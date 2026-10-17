@@ -3,7 +3,9 @@ from datetime import datetime, timezone
 from sqlalchemy import create_engine, String, Text, Float, Integer, Boolean, JSON
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
-engine = create_engine(os.getenv('DATABASE_URL', 'sqlite:///./lecture.db'), **({'connect_args': {'check_same_thread': False}} if os.getenv('DATABASE_URL', 'sqlite:').startswith('sqlite:') else {}))
+database_url=os.getenv('DATABASE_URL','sqlite:///./lecture.db')
+if database_url.startswith('postgresql://'): database_url=database_url.replace('postgresql://','postgresql+psycopg://',1)
+engine = create_engine(database_url, **({'connect_args': {'check_same_thread': False}} if database_url.startswith('sqlite:') else {}))
 Session = sessionmaker(engine, expire_on_commit=False)
 class Base(DeclarativeBase): pass
 def uid(): return uuid.uuid4().hex
