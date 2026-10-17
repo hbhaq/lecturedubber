@@ -1,0 +1,14 @@
+.env
+.env.*
+!.env.example
+*.zip
+**/node_modules/
+**/.next/
+**/.next-verify/
+**/.next*/
+**/__pycache__/
+**/.pytest_cache/
+**/*.tsbuildinfo
+**/*.db
+**/data/
+.venv/
