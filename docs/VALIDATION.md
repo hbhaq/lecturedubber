@@ -65,3 +65,4 @@ Media tests used a real FFmpeg 7.1 executable and real eSpeak NG 1.52 offline sp
 4. Process, edit, acknowledge flags and approve. Verify voice preview, pronunciation, synchronized preview, flagged holds and final exports.
 5. Edit an approved segment and confirm approval/export invalidation. Retry a deliberately interrupted render and confirm existing speech is reused.
 6. Run a representative long lecture, then inspect transitions and end-of-lecture sync before relying on this for teaching distribution.
+

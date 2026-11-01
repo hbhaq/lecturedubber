@@ -78,3 +78,13 @@ def test_startup_redelivers_only_durable_queued_jobs(monkeypatch):
         db.add_all([queued,Job(lecture_id='y',kind='process',status='running'),Job(lecture_id='z',kind='process',status='done')]);db.commit();jid=queued.id
     sent=[];monkeypatch.setattr(worker,'enqueue',sent.append)
     worker.restore_queued();assert sent==[jid]
+
+def test_duplicate_delivery_does_not_fail_active_job(monkeypatch):
+    from app import worker
+    monkeypatch.setenv('LOCAL_WORKER','0')
+    with Session() as db:
+        j=Job(lecture_id='fixture',kind='process',status='running');db.add(j);db.commit();jid=j.id
+    monkeypatch.setattr(worker,'execute',lambda _:pytest.fail('duplicate must not execute'))
+    worker.perform(jid)
+    with Session() as db: assert db.get(Job,jid).status=='running'
+

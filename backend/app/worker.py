@@ -1,6 +1,7 @@
 """PostgreSQL jobs are durable; Redis is only delivery and mutual exclusion."""
 import os, threading
 from redis import Redis
+from redis.exceptions import LockError
 from rq import Queue, Worker
 from sqlalchemy import select
 from .db import init_db, Session, Job, Lecture, engine, now
@@ -18,9 +19,12 @@ def perform(jid):
         redis=Redis.from_url(os.getenv('REDIS_URL','redis://redis:6379/0'))
         with Session() as db:
             j=db.get(Job,jid)
-            if not j or j.status in ('done','cancelled') or j.cancel: return
+            if not j or j.status in ('done','cancelled','running') or j.cancel: return
             lid=j.lecture_id
         with redis.lock('lecture:'+lid,timeout=28800,blocking_timeout=1),heartbeat(jid): execute(jid)
+    except LockError:
+        # Another delivery owns this lecture; never fail its active job.
+        return
     except Exception as error:
         # Failures before execute() must not leave a permanently queued job.
         engine.dispose(close=False)
@@ -62,3 +66,4 @@ if __name__=='__main__':
     else:
         restore_queued()
         Worker(['default'],connection=Redis.from_url(os.getenv('REDIS_URL','redis://redis:6379/0'))).work()
+
