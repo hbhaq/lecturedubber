@@ -10,9 +10,12 @@ if not shutil.which(FFMPEG):
 FFPROBE = os.getenv('FFPROBE', 'ffprobe')
 def run(args):
     r = subprocess.run([str(x) for x in args], capture_output=True, text=True)
-    if r.returncode: raise RuntimeError('Media operation failed: ' + r.stderr[-1600:])
+    if r.returncode:
+        detail=r.stderr.strip()[-1600:]
+        if r.returncode in (-9,137): detail='FFmpeg was killed by the host (usually the memory limit). Retry with bounded rendering threads; cached narration is retained. '+detail
+        raise RuntimeError(f'Media operation failed (exit {r.returncode}): '+(detail or 'Process ended without an error message; check host memory and disk limits.'))
     return r.stdout
-def ff(*args): return run([FFMPEG, '-hide_banner', '-loglevel', 'error', '-y', *args])
+def ff(*args): return run([FFMPEG, '-hide_banner', '-loglevel', 'error', '-y', '-filter_threads','1','-filter_complex_threads','1', *args])
 def probe(path):
     if not shutil.which(FFPROBE):
         # Native development fallback. Docker and production use ffprobe JSON.
@@ -55,9 +58,9 @@ def render_interval(source, audio, row, out):
     # A sub-frame trailing gap can otherwise yield audio-only MP4 and break
     # concat stream ordering. Use the preceding frame for such intervals.
     seek=row['source_start'] if span>=1/30 else max(0,row['source_start']-1/30)
-    args=['-ss',str(seek),'-t',str(max(span,1/30)),'-i',str(source)]
+    args=['-threads','1','-ss',str(seek),'-t',str(max(span,1/30)),'-i',str(source)]
     args+=['-i',str(audio)] if audio else ['-f','lavfi','-i','anullsrc=r=48000:cl=mono']
-    ff(*args,'-filter_complex',f"[0:v]setpts=PTS-STARTPTS,fps=30,scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1,tpad=stop_mode=clone:stop_duration={row['hold']+.1},trim=duration={length}[v];[1:a]asetpts=PTS-STARTPTS,atempo={row['tempo']},aresample=48000,aformat=channel_layouts=mono,apad,atrim=duration={length}[a]",'-map','[v]','-map','[a]','-c:v','libx264','-preset','fast','-crf','20','-pix_fmt','yuv420p','-c:a','aac','-b:a','128k','-t',str(length),'-movflags','+faststart',str(out))
+    ff(*args,'-filter_complex',f"[0:v]setpts=PTS-STARTPTS,fps=30,scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1,tpad=stop_mode=clone:stop_duration={row['hold']+.1},trim=duration={length}[v];[1:a]asetpts=PTS-STARTPTS,atempo={row['tempo']},aresample=48000,aformat=channel_layouts=mono,apad,atrim=duration={length}[a]",'-map','[v]','-map','[a]','-c:v','libx264','-threads','1','-preset','ultrafast','-tune','zerolatency','-crf','20','-pix_fmt','yuv420p','-c:a','aac','-b:a','128k','-t',str(length),'-movflags','+faststart',str(out))
 def stamp(t, vtt=False):
     n=round(t*1000); h,n=divmod(n,3600000); m,n=divmod(n,60000); s,ms=divmod(n,1000)
     return f'{h:02}:{m:02}:{s:02}{"." if vtt else ","}{ms:03}'
@@ -72,3 +75,4 @@ def subtitles(timeline, segments, vtt=False):
             b=r['final_start']+(r['speech_end']-r['final_start'])*(i+1)/len(chunks)
             cues.append(f'{len(cues)+1}\n{stamp(a,vtt)} --> {stamp(b,vtt)}\n{text}\n')
     return ('WEBVTT\n\n' if vtt else '')+'\n'.join(cues)
+

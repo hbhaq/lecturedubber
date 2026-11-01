@@ -85,4 +85,3 @@ def init_db():
     with Session() as db:
         if not db.get(LoginGate,'admin'):
             db.add(LoginGate(id='admin',failures=0,window_start=0));db.commit()
-

@@ -87,4 +87,3 @@ def test_duplicate_delivery_does_not_fail_active_job(monkeypatch):
     monkeypatch.setattr(worker,'execute',lambda _:pytest.fail('duplicate must not execute'))
     worker.perform(jid)
     with Session() as db: assert db.get(Job,jid).status=='running'
-

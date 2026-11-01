@@ -66,4 +66,3 @@ if __name__=='__main__':
     else:
         restore_queued()
         Worker(['default'],connection=Redis.from_url(os.getenv('REDIS_URL','redis://redis:6379/0'))).work()
-

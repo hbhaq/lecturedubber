@@ -1,5 +1,12 @@
 # Implementation verification
 
+## Trial renderer memory update — 2026-11-01
+
+- Cloud preview logs show all 14 narration segments completed, then failure at render interval 1. Railway memory samples reached the 1 GB service limit; FFmpeg returned no stderr. Host memory termination is the leading diagnosis; future errors include the actual process exit code.
+- Bound video decoding, filtering and H.264 encoding to one thread; use ultrafast/zerolatency encoding to avoid encoder lookahead buffering. Source resolution and timing are retained. Caption burning uses the same bounded encoder. Render cache version changes; narration cache keys are unchanged.
+- 22 regression tests passed in the full run; the added 4K hold fixture initially used invalid duration syntax and passed after correction. Both new renderer tests pass, including real 3840×2160 frame-hold rendering and useful diagnostics for a simulated killed process. Actual cloud rendering still requires retry of the user's failed job.
+- Rollback now explicitly expires the job identity map so failed jobs retain their real stage and progress instead of incorrectly displaying queued/0%.
+
 ## Inline transcript editing and runtime activity — 2026-11-01
 
 - Backend regression checks include a mocked-AI sample-to-full processing test that preserves reviewed source/English sample corrections, source correction revoking approval, activity cleanup on deletion, independent worker heartbeat persistence, worker-entry failure status, fresh per-process connection pools and redelivery of queued jobs. Existing real FFmpeg/offline speech pipeline tests are retained. No new paid provider requests were made by these tests.
@@ -65,4 +72,3 @@ Media tests used a real FFmpeg 7.1 executable and real eSpeak NG 1.52 offline sp
 4. Process, edit, acknowledge flags and approve. Verify voice preview, pronunciation, synchronized preview, flagged holds and final exports.
 5. Edit an approved segment and confirm approval/export invalidation. Retry a deliberately interrupted render and confirm existing speech is reused.
 6. Run a representative long lecture, then inspect transitions and end-of-lecture sync before relying on this for teaching distribution.
-

@@ -111,7 +111,7 @@ def execute(jid):
                 rev=f'{lid}/versions/{l.revision}'; parts=[]; by={s.id:s for s in segments}
                 for i,r in enumerate(timeline):
                     checkpoint(jid,'rendering preview',.6+.35*i/len(timeline),f'Rendering interval {i+1}/{len(timeline)}')
-                    key=digest(r,by[r['id']].audio_key if r['id'] else 'silence')
+                    key=digest('bounded-render-v2',r,by[r['id']].audio_key if r['id'] else 'silence')
                     part=store.path(f'{lid}/parts/{key}.mp4')
                     if not part.exists():
                         tmp=part.with_suffix('.partial.mp4')
@@ -162,15 +162,15 @@ def execute(jid):
                     # Relative filter path avoids Windows drive-colon escaping.
                     import subprocess
                     from .media import FFMPEG
-                    r=subprocess.run([FFMPEG,'-hide_banner','-loglevel','error','-y','-i','preview.mp4','-vf','subtitles=subtitles.srt','-c:v','libx264','-crf','20','-pix_fmt','yuv420p','-c:a','copy','-movflags','+faststart','lecture.mp4'],cwd=video.parent,capture_output=True,text=True)
+                    r=subprocess.run([FFMPEG,'-hide_banner','-loglevel','error','-y','-i','preview.mp4','-vf','subtitles=subtitles.srt','-c:v','libx264','-threads','1','-preset','ultrafast','-tune','zerolatency','-crf','20','-pix_fmt','yuv420p','-c:a','copy','-movflags','+faststart','lecture.mp4'],cwd=video.parent,capture_output=True,text=True)
                     if r.returncode: raise RuntimeError('Caption burn failed; check FFmpeg libass support: '+r.stderr[-800:])
                 else: shutil.copyfile(store.path(l.preview),video)
                 export['lecture.mp4']=folder+'/lecture.mp4'; l.exports=export; l.status='ready'; db.commit()
             j=db.get(Job,jid); db.refresh(j); j.status='done'; j.stage=l.status; j.progress=1; j.updated=now(); db.commit()
             event(db,j,j.stage,'Completed successfully');db.commit()
         except Exception as e:
-            db.rollback(); j=db.get(Job,jid); l=db.get(Lecture,lid)
-            j.status='cancelled' if isinstance(e,Cancelled) else 'failed'
+            db.rollback(); db.expire_all(); j=db.get(Job,jid); l=db.get(Lecture,lid)
+            j.stage=l.status; j.progress=max(j.progress,0); j.status='cancelled' if isinstance(e,Cancelled) else 'failed'
             # Do not include provider response bodies or lecture text in errors.
             if isinstance(e,(ValueError,RuntimeError,Cancelled)): j.error=str(e)[:1800]
             elif type(e).__name__=='RateLimitError':
@@ -180,3 +180,4 @@ def execute(jid):
             else: j.error=type(e).__name__+': stage failed. Check credentials, quota, connectivity and provider availability; retry resumes cached work.'
             j.updated=now(); l.status=j.status; db.commit()
             event(db,j,j.stage,'Cancelled' if isinstance(e,Cancelled) else 'Failed: '+j.error);db.commit()
+
