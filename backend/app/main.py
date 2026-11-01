@@ -8,7 +8,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy import func
-from .db import init_db, Session, Lecture, Segment, Job
+from .db import init_db, Session, Lecture, Segment, Job, JobEvent, JobPulse, now
 from .storage import store
 from .pipeline import rows, asdict, invalidate
 from .worker import enqueue
@@ -48,7 +48,10 @@ class Settings(BaseModel):
     pronunciation:str=Field(default='',max_length=3000)
 class Edit(BaseModel):
     english:str=Field(min_length=1,max_length=4000)
+    original:str|None=Field(default=None,min_length=1,max_length=12000)
     acknowledged:bool=False
+class SampleEdit(Edit):
+    index:int=Field(ge=0)
 class Start(BaseModel):
     kind:str
     burn_captions:bool=False
@@ -71,7 +74,22 @@ def create(value:Create):
 def detail(lid:str):
     with Session() as db:
         l=get(db,lid); jobs=db.scalars(select(Job).where(Job.lecture_id==lid).order_by(Job.updated.desc())).all()
-        return {**asdict(l),'segments':[asdict(s) for s in rows(db,lid)],'jobs':[asdict(j) for j in jobs],'sample':store.json(f'{lid}/sample.json')}
+        output=[]
+        for j in jobs:
+            pulse=db.get(JobPulse,j.id)
+            events=db.scalars(select(JobEvent).where(JobEvent.job_id==j.id).order_by(JobEvent.created.desc(),JobEvent.id.desc()).limit(100)).all()
+            output.append({**asdict(j),'heartbeat':pulse.heartbeat if pulse else None,'events':[asdict(e) for e in reversed(events)]})
+        return {**asdict(l),'server_time':now(),'segments':[asdict(s) for s in rows(db,lid)],'jobs':output,'sample':store.json(f'{lid}/sample-reviewed.json') or store.json(f'{lid}/sample.json')}
+@app.put('/lectures/{lid}/sample')
+def edit_sample(lid:str,value:SampleEdit):
+    with Session() as db:
+        l=get(db,lid,True);idle(db,lid)
+        if rows(db,lid): raise HTTPException(409,'Full transcript already exists. Edit its passages instead.')
+        data=store.json(f'{lid}/sample-reviewed.json') or store.json(f'{lid}/sample.json')
+        if not data or value.index>=len(data): raise HTTPException(404,'Sample passage not found')
+        if not value.english.strip() or (value.original is not None and not value.original.strip()): raise HTTPException(400,'Text cannot be blank')
+        data[value.index]={**data[value.index],'english':value.english,'original':value.original if value.original is not None else data[value.index]['original'],'acknowledged':value.acknowledged}
+        store.json(f'{lid}/sample-reviewed.json',data);return data[value.index]
 @app.post('/lectures/{lid}/source')
 def upload(lid:str,file:UploadFile):
     # UploadFile is spooled to disk by Starlette; copy in bounded chunks.
@@ -105,7 +123,11 @@ def edit(lid:str,sid:str,value:Edit):
         l=get(db,lid,True); idle(db,lid); s=db.get(Segment,sid)
         if not s or s.lecture_id!=lid: raise HTTPException(404,'Segment not found')
         if not value.english.strip(): raise HTTPException(400,'Segment must contain narration')
-        if s.english!=value.english: s.english=value.english; invalidate(l,s)
+        changed=s.english!=value.english or (value.original is not None and s.original!=value.original)
+        if changed:
+            s.english=value.english
+            if value.original is not None: s.original=value.original
+            invalidate(l,s)
         s.acknowledged=value.acknowledged; db.commit(); return asdict(s)
 @app.post('/lectures/{lid}/approve')
 def approve(lid:str):
@@ -134,6 +156,8 @@ def start(lid:str,value:Start):
         if value.kind=='preview' and l.approved!=l.revision: raise HTTPException(409,'Approve script before paid narration')
         if value.kind=='export' and not l.preview: raise HTTPException(409,'Review a synchronized preview first')
         j=Job(lecture_id=lid,kind=value.kind,options=value.model_dump()); db.add(j); db.commit(); jid=j.id
+        from .activity import event
+        event(db,j,'queued','Waiting for a worker');db.commit()
     try: enqueue(jid)
     except Exception:
         with Session() as db:
@@ -172,6 +196,8 @@ def remove(lid:str):
     with Session() as db:
         l=get(db,lid,True); idle(db,lid)
         for s in rows(db,lid): db.delete(s)
+        db.query(JobEvent).filter(JobEvent.job_id.in_(select(Job.id).where(Job.lecture_id==lid))).delete(synchronize_session=False)
+        db.query(JobPulse).filter(JobPulse.job_id.in_(select(Job.id).where(Job.lecture_id==lid))).delete(synchronize_session=False)
         for j in db.scalars(select(Job).where(Job.lecture_id==lid)): db.delete(j)
         root=store.path(lid+'/placeholder').parent
         if root.is_relative_to(store.root) and root!=store.root: shutil.rmtree(root)

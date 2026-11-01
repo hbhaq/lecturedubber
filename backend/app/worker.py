@@ -3,17 +3,46 @@ import os, threading
 from redis import Redis
 from rq import Queue, Worker
 from sqlalchemy import select
-from .db import init_db, Session, Job
+from .db import init_db, Session, Job, Lecture, engine, now
 from .pipeline import execute
+from .activity import heartbeat
 
 local_lock=threading.Lock()
 def perform(jid):
     if os.getenv('LOCAL_WORKER')=='1':
-        with local_lock: execute(jid)
+        with local_lock,heartbeat(jid): execute(jid)
         return
-    redis=Redis.from_url(os.getenv('REDIS_URL','redis://redis:6379/0'))
-    with Session() as db: lid=db.get(Job,jid).lecture_id
-    with redis.lock('lecture:'+lid,timeout=28800,blocking_timeout=1): execute(jid)
+    # RQ forks a work horse. Never reuse the parent's PostgreSQL/SSL sockets.
+    engine.dispose(close=False)
+    try:
+        redis=Redis.from_url(os.getenv('REDIS_URL','redis://redis:6379/0'))
+        with Session() as db:
+            j=db.get(Job,jid)
+            if not j or j.status in ('done','cancelled') or j.cancel: return
+            lid=j.lecture_id
+        with redis.lock('lecture:'+lid,timeout=28800,blocking_timeout=1),heartbeat(jid): execute(jid)
+    except Exception as error:
+        # Failures before execute() must not leave a permanently queued job.
+        engine.dispose(close=False)
+        with Session() as db:
+            j=db.get(Job,jid)
+            if j and j.status in ('queued','running'):
+                from .activity import event
+                j.status='failed';j.updated=now()
+                j.error=type(error).__name__+': worker could not start or retain this job. Retry to resume cached work.'
+                l=db.get(Lecture,j.lecture_id)
+                if l: l.status='failed'
+                event(db,j,j.stage,j.error);db.commit()
+        raise
+
+def restore_queued():
+    """Redeliver durable queued jobs, including old failures before worker entry.
+
+    Duplicate delivery is safe under the lecture lock and completed-job check.
+    Running jobs require explicit recovery after the previous worker is stopped.
+    """
+    with Session() as db: ids=list(db.scalars(select(Job.id).where(Job.status=='queued',Job.cancel==False)))
+    for jid in ids: enqueue(jid)
 def enqueue(jid):
     if os.getenv('LOCAL_WORKER')=='1': threading.Thread(target=perform,args=(jid,),daemon=True).start()
     else:
@@ -30,4 +59,6 @@ if __name__=='__main__':
     import sys
     init_db()
     if '--recover' in sys.argv: recover()
-    else: Worker(['default'],connection=Redis.from_url(os.getenv('REDIS_URL','redis://redis:6379/0'))).work()
+    else:
+        restore_queued()
+        Worker(['default'],connection=Redis.from_url(os.getenv('REDIS_URL','redis://redis:6379/0'))).work()

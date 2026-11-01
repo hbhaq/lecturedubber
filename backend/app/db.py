@@ -5,7 +5,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 database_url=os.getenv('DATABASE_URL','sqlite:///./lecture.db')
 if database_url.startswith('postgresql://'): database_url=database_url.replace('postgresql://','postgresql+psycopg://',1)
-engine = create_engine(database_url, **({'connect_args': {'check_same_thread': False}} if database_url.startswith('sqlite:') else {}))
+engine = create_engine(database_url, pool_pre_ping=True, **({'connect_args': {'check_same_thread': False}} if database_url.startswith('sqlite:') else {}))
 Session = sessionmaker(engine, expire_on_commit=False)
 class Base(DeclarativeBase): pass
 def uid(): return uuid.uuid4().hex
@@ -64,6 +64,17 @@ class LoginSession(Base):
     token_hash: Mapped[str] = mapped_column(String, primary_key=True)
     expires: Mapped[float] = mapped_column(Float)
     credential_version: Mapped[str] = mapped_column(String)
+class JobEvent(Base):
+    __tablename__ = 'job_events'
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=uid)
+    job_id: Mapped[str] = mapped_column(String, index=True)
+    created: Mapped[str] = mapped_column(String, default=now)
+    stage: Mapped[str] = mapped_column(String)
+    message: Mapped[str] = mapped_column(Text)
+class JobPulse(Base):
+    __tablename__ = 'job_pulses'
+    job_id: Mapped[str] = mapped_column(String, primary_key=True)
+    heartbeat: Mapped[str] = mapped_column(String, default=now)
 class LoginGate(Base):
     __tablename__ = 'login_gate'
     id: Mapped[str] = mapped_column(String, primary_key=True)

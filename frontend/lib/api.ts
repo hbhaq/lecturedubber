@@ -10,7 +10,11 @@ export async function api(path: string, method = "GET", body?: unknown) {
   const headers: Record<string, string> = {};
   if (!(body instanceof FormData)) headers["Content-Type"] = "application/json";
   if (!["GET", "HEAD"].includes(method) && csrf) headers["X-CSRF-Token"] = csrf;
-  const r = await fetch(API + path, {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20000);
+  let r: Response;
+  try { r = await fetch(API + path, {
+    signal: controller.signal,
     method,
     credentials: "include",
     headers,
@@ -20,7 +24,10 @@ export async function api(path: string, method = "GET", body?: unknown) {
         : body === undefined
           ? undefined
           : JSON.stringify(body),
-  });
+  }); } catch (e) {
+    if (controller.signal.aborted) throw Error("Server did not respond within 20 seconds. Background processing may still be running; refresh status.");
+    throw e;
+  } finally { clearTimeout(timer); }
   if (!r.ok) {
     if (
       r.status === 401 &&

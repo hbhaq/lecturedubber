@@ -20,6 +20,11 @@ type Job = {
   progress: number;
   error: string;
   usage: unknown[];
+  updated: string;
+  heartbeat: string | null;
+  attempts: number;
+  cancel: boolean;
+  events: {id: string; created: string; stage: string; message: string}[];
 };
 type Mapping = {
   id: string | null;
@@ -63,19 +68,22 @@ function Editor({
   regenerate,
 }: {
   segment: Segment;
-  onSave: (s: Segment, text: string, ack: boolean) => Promise<void>;
+  onSave: (s: Segment, text: string, ack: boolean, original: string) => Promise<void>;
   seek: () => void;
   busy: boolean;
   regenerate: () => void;
 }) {
   const [text, setText] = useState(s.english),
+    [original, setOriginal] = useState(s.original),
     [ack, setAck] = useState(s.acknowledged),
     [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
   useEffect(() => {
     setText(s.english);
     setAck(s.acknowledged);
   }, [s.english, s.acknowledged]);
-  const dirty = text !== s.english || ack !== s.acknowledged;
+  useEffect(() => setOriginal(s.original), [s.original]);
+  const dirty = text !== s.english || original !== s.original || ack !== s.acknowledged;
   return (
     <article
       data-dirty={dirty ? "true" : "false"}
@@ -92,7 +100,7 @@ function Editor({
       <div className="segment-columns">
         <div>
           <label>ORIGINAL · URDU + ENGLISH</label>
-          <p dir="auto">{s.original}</p>
+          <textarea aria-label="Original transcription" dir="auto" value={original} maxLength={12000} onChange={e => setOriginal(e.target.value)} disabled={busy}/>
         </div>
         <div>
           <label htmlFor={"segment-" + s.id}>ENGLISH NARRATION</label>
@@ -124,10 +132,10 @@ function Editor({
           className="secondary"
           disabled={!dirty || busy || saving}
           onClick={async () => {
-            setSaving(true);
+            setSaving(true);setSaveError("");
             try {
-              await onSave(s, text, ack);
-            } finally {
+              await onSave(s, text, ack, original);
+            } catch(e) {setSaveError(e instanceof Error ? e.message : "Save failed");} finally {
               setSaving(false);
             }
           }}
@@ -145,6 +153,7 @@ function Editor({
         )}
         <small className="muted">{text.length}/4000 characters</small>
       </div>
+      {saveError && <p className="error" role="alert">{saveError}</p>}
     </article>
   );
 }
@@ -172,6 +181,9 @@ export default function Home() {
     glossary: "",
     mode: "demo",
   });
+  const [lastSync, setLastSync] = useState<number | null>(null);
+  const [pollError, setPollError] = useState("");
+  const [clock, setClock] = useState(Date.now());
   const video = useRef<HTMLVideoElement>(null),
     selection = useRef<string | null>(null);
   const active = selected?.jobs?.find((j) =>
@@ -183,17 +195,25 @@ export default function Home() {
     const key = id || selection.current;
     if (key) {
       const l = await api("/lectures/" + key);
-      setSelected(l);
+      if (key === selection.current) setSelected(l);
     }
+    setLastSync(Date.now());setPollError("");
   }
   useEffect(() => {
     api("/health")
       .then(setHealth)
       .catch((e) => setError(e.message));
     refresh().catch((e) => setError(e.message));
-    const t = setInterval(() => refresh().catch(() => {}), 2500);
+    let pending = false;
+    const t = setInterval(async () => {
+      if (pending) return;
+      pending = true;
+      try { await refresh(); } catch (e) {setPollError(e instanceof Error ? e.message : "Cannot reach server");}
+      finally {pending = false;}
+    }, 2500);
     return () => clearInterval(t);
   }, []);
+  useEffect(() => {const t=setInterval(()=>setClock(Date.now()),1000);return ()=>clearInterval(t);},[]);
   async function act(fn: () => Promise<void>) {
     setBusy(true);
     setError("");
@@ -256,6 +276,7 @@ export default function Home() {
         accept_holds: acceptHolds,
       });
       await refresh();
+      if (kind === "process") setTab("script");
       setNotice(
         kind === "voice_preview"
           ? "Voice preview queued. This short preview may incur a small provider charge in live mode."
@@ -311,12 +332,12 @@ export default function Home() {
           ⊕ <span>New lecture</span>
         </button>
         <div className="sidebar-bottom">
-          <span className="local-dot" /> Local workspace
+          <span className="local-dot" /> Private workspace
           <p>
             Your screen. Your teaching.
             <br />A new audience.
           </p>
-          <small>Single user · stored on this computer</small>
+          <small>Single user · stored on your app server</small>
         </div>
       </aside>
       <main>
@@ -646,6 +667,10 @@ export default function Home() {
                     <span>{Math.round(active.progress * 100)}%</span>
                   </div>
                   <progress max={1} value={active.progress} />
+                  <p>{active.events?.at(-1)?.message || "Waiting for the worker to start"}</p>
+                  <p className="tiny">Attempt {active.attempts} · Last progress {Math.max(0,Math.floor((clock-Date.parse(active.updated))/1000))}s ago · {active.heartbeat ? `Worker heartbeat ${Math.max(0,Math.floor((clock-Date.parse(active.heartbeat))/1000))}s ago` : "Worker has not reported a heartbeat"}. Progress is stage-based, not a time estimate.</p>
+                  {active.status === "running" && (!active.heartbeat || clock-Date.parse(active.heartbeat)>30000) && <p className="flag" role="status">Worker heartbeat is missing or delayed. This may be interrupted work; it is not proof that processing is continuing.</p>}
+                  {active.status === "running" && clock-Date.parse(active.updated)>120000 && <p className="flag">No completed step for over two minutes. A fresh heartbeat means the worker process is alive, but the current provider or media operation may still be waiting.</p>}
                   <button
                     className="text-button"
                     onClick={() =>
@@ -655,11 +680,16 @@ export default function Home() {
                       })
                     }
                   >
-                    Cancel after current operation
+                    {active.cancel ? "Cancellation requested · waiting for current operation" : "Cancel after current operation"}
                   </button>
                 </div>
               )}
+              <div className={pollError ? "error" : "notice"} role="status">
+                {pollError ? `Connection lost: ${pollError}. Displayed progress may be outdated; reconnecting automatically.` : `Connected · refreshed ${lastSync ? Math.max(0,Math.floor((clock-lastSync)/1000))+"s ago" : "…"}`}
+                <button className="text-button" onClick={()=>void refresh().catch(e=>setPollError(e.message))}>Refresh status</button>
+              </div>
               {selected.jobs
+                ?.slice(0, 1)
                 ?.filter(
                   (j) => j.status === "failed" || j.status === "cancelled",
                 )
@@ -700,7 +730,7 @@ export default function Home() {
                   </button>
                 ))}
               </nav>
-              {tab === "source" && (
+              {(tab === "source" || tab === "script") && (
                 <div className="new-grid">
                   <section className="panel">
                     <h2>Original lecture</h2>
@@ -757,16 +787,8 @@ export default function Home() {
                     </button>
                     {selected.sample && (
                       <div className="sample">
-                        {selected.sample.map((s, i) => (
-                          <div key={i}>
-                            <b>
-                              {times(s.start)} — {times(s.end)}
-                            </b>
-                            <p dir="auto">{s.original}</p>
-                            <p>{s.english}</p>
-                            <small>{s.flags.join(" · ")}</small>
-                          </div>
-                        ))}
+                        <p>Sample only · first 30 seconds. Correct both columns here. Saved corrections carry into the full script.</p>
+                        {selected.sample.map((s, i) => <Editor key={i} segment={{...s,id:`sample-${i}`,acknowledged:!!s.acknowledged}} busy={disabled || !!selected.segments?.length} seek={()=>{}} regenerate={()=>{}} onSave={async (_s,text,ack,original)=>{await api(`/lectures/${selected.id}/sample`,"PUT",{index:i,english:text,original,acknowledged:ack});await refresh();}}/>)}
                       </div>
                     )}
                     <div className="divider" />
@@ -776,7 +798,10 @@ export default function Home() {
                         !selected.sample_ok ||
                         !!selected.segments?.length
                       }
-                      onClick={() => job("process")}
+                      onClick={() => {
+                        if (document.querySelector('.segment[data-dirty="true"]')) {setError("Save your sample edits before processing the full lecture.");return;}
+                        void job("process");
+                      }}
                     >
                       Sample checked · Process full lecture →
                     </button>
@@ -787,11 +812,11 @@ export default function Home() {
                   </section>
                 </div>
               )}
-              {tab === "script" && (
+              {(tab === "script" || tab === "source") && (
                 <>
                   <div className="editor-toolbar">
                     <div>
-                      <h2>Review every explanation.</h2>
+                      <h2>Full lecture transcript & English script</h2>
                       <p className="muted">
                         Save edits in each segment, check flagged passages, then
                         approve the script.
@@ -840,12 +865,12 @@ export default function Home() {
                             void video.current.play();
                           }
                         }}
-                        onSave={async (s, text, ack) => {
+                        onSave={async (s, text, ack, original) => {
                           await act(async () => {
                             await api(
                               `/lectures/${selected.id}/segments/${s.id}`,
                               "PUT",
-                              { english: text, acknowledged: ack },
+                              { english: text, original, acknowledged: ack },
                             );
                             await refresh();
                           });
@@ -863,8 +888,8 @@ export default function Home() {
                     ))
                   ) : (
                     <div className="empty">
-                      <h3>Your script will appear here</h3>
-                      <p>Process the lecture from Source & sample first.</p>
+                      <h3>{active?.kind === "process" ? "Preparing your full lecture transcript…" : "Your full transcript will appear here"}</h3>
+                      <p>{active?.kind === "process" ? "Transcription and translation are running in the background. Watch the activity log for progress; the editable full script appears here automatically when complete." : "Check the sample, then click Process full lecture above. No narration is generated until you approve."}</p>
                     </div>
                   )}
                 </>
@@ -921,11 +946,11 @@ export default function Home() {
                       Generate short voice preview
                     </button>
                   </div>
-                  <audio
+                  {selected.jobs?.some(j=>j.kind === "voice_preview" && j.status === "done") && <audio
                     key={selected.voice + (selected.jobs?.[0]?.status || "")}
                     controls
                     src={asset(selected, "voice.wav")}
-                  />
+                  />}
                   <div className="divider" />
                   <button
                     disabled={
@@ -1064,13 +1089,16 @@ export default function Home() {
                   )}
                 </>
               )}
-              <details className="usage">
-                <summary>Processing history & provider usage</summary>
+              <details className="usage" open>
+                <summary>Live activity & processing history</summary>
                 {selected.jobs?.map((j) => (
                   <div key={j.id}>
                     <b>
                       {j.kind} · {j.status} · {j.stage}
                     </b>
+                    <p className="tiny">Attempt {j.attempts} · Updated {new Date(j.updated).toLocaleTimeString()}</p>
+                    <ol className="activity-log">{j.events?.map(e=><li key={e.id}><time>{new Date(e.created).toLocaleTimeString()}</time> · <b>{e.stage}</b> · {e.message}</li>)}</ol>
+                    {j.error && <p className="error">{j.error}</p>}
                     {j.usage?.length > 0 && (
                       <pre>{JSON.stringify(j.usage, null, 2)}</pre>
                     )}

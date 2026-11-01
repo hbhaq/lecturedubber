@@ -5,6 +5,7 @@ from .db import Session, Lecture, Segment, Job, now
 from .storage import store, digest
 from .providers import adapters, STT_MODEL, LLM_MODEL, TTS_MODEL
 from .media import ff, duration, probe, plan, render_interval, subtitles, stamp
+from .activity import event
 
 class Cancelled(Exception): pass
 def rows(db,lid): return db.scalars(select(Segment).where(Segment.lecture_id==lid).order_by(Segment.start,Segment.id)).all()
@@ -13,17 +14,19 @@ def audio_key(l,s): return digest(l.mode,TTS_MODEL if l.mode=='live' else 'espea
 def invalidate(l,s=None):
     l.revision+=1; l.approved=0; l.preview=''; l.exports={}; l.timeline=[]; l.status='awaiting review'
     if s: s.revision+=1; s.audio_key=''; s.audio=''; s.audio_duration=0; s.acknowledged=False
-def checkpoint(jid,stage,p):
+def checkpoint(jid,stage,p,message=None):
     with Session() as db:
         j=db.get(Job,jid)
         if j.cancel: raise Cancelled()
         j.stage=stage; j.progress=p; j.updated=now(); db.commit()
+        event(db,j,stage,message or stage.capitalize());db.commit()
         l=db.get(Lecture,j.lecture_id); l.status=stage; db.commit()
 def execute(jid):
     with Session() as db:
         j=db.get(Job,jid)
         if not j or j.status in ('done','cancelled') or j.cancel: return
         j.status='running'; j.attempts+=1; j.error=''; j.updated=now(); db.commit()
+        event(db,j,j.stage,'Worker started attempt '+str(j.attempts));db.commit()
         l=db.get(Lecture,j.lecture_id); lid=l.id
         def usage(value):
             with Session() as u:
@@ -47,13 +50,13 @@ def execute(jid):
                     raise ValueError(f'Trial recordings are limited to {maximum:g} seconds. Delete this lecture and upload a shorter test video. No transcription request was made.')
                 total=min(30.,l.duration) if j.kind=='sample' else l.duration
                 all_segments=[]
-                for index in range(math.ceil(total/300)):
-                    checkpoint(jid,'transcribing',.1+.5*index/max(1,math.ceil(total/300)))
-                    offset=index*300; length=min(300,total-offset)
+                chunks=[(0,min(30.,total))]+[(o,min(300.,total-o)) for o in range(30,math.ceil(total),300)]
+                for index,(offset,length) in enumerate(chunks):
+                    checkpoint(jid,'transcribing',.1+.5*index/len(chunks),f'Transcribing audio part {index+1}/{len(chunks)} ({offset:.0f}–{offset+length:.0f} seconds)')
                     wav=root/f'input-{index}-{length:.2f}.wav'
                     if not wav.exists(): ff('-ss',str(offset),'-t',str(length),'-i',source,'-vn','-ac','1','-ar','16000','-c:a','pcm_s16le',wav)
                     # 300 seconds PCM mono = 9.6 MB, below 25 MB per request.
-                    key=f'{lid}/cache/stt-{digest(l.mode,STT_MODEL,index,length,l.glossary)}.json'
+                    key=f'{lid}/cache/stt-{digest(l.mode,STT_MODEL,offset,length,l.glossary)}.json'
                     data=store.json(key)
                     if data is None: data=stt.transcribe(wav,l.glossary); store.json(key,data)
                     previous=offset
@@ -65,8 +68,12 @@ def execute(jid):
                 if not all_segments: raise ValueError('No speech segments returned. Listen to the source and check microphone audio.')
                 checkpoint(jid,'translating',.65)
                 translated=[]
+                sample_edits=store.json(f'{lid}/sample-reviewed.json') or []
                 for i,s in enumerate(all_segments):
-                    checkpoint(jid,'translating',.65+.3*i/len(all_segments))
+                    checkpoint(jid,'translating',.65+.3*i/len(all_segments),f'Translating passage {i+1}/{len(all_segments)}')
+                    correction=next((x for x in sample_edits if abs(x['start']-s['start'])<.01 and abs(x['end']-s['end'])<.01),None)
+                    if correction:
+                        translated.append({**s,'original':correction['original'],'english':correction['english'],'flags':correction['flags']});continue
                     key=f'{lid}/cache/translate-{digest(l.mode,LLM_MODEL,s["original"],l.context,l.glossary)}.json'
                     t=store.json(key)
                     if t is None: t=llm.translate(s['original'],l.context,l.glossary); store.json(key,t)
@@ -91,7 +98,7 @@ def execute(jid):
                 segments=rows(db,lid)
                 if not segments: raise ValueError('No reviewed segments.')
                 for i,s in enumerate(segments):
-                    checkpoint(jid,'generating narration',.05+.45*i/len(segments))
+                    checkpoint(jid,'generating narration',.05+.45*i/len(segments),f'Generating narration {i+1}/{len(segments)} (cached audio reused when available)')
                     key=audio_key(l,s); asset=f'{lid}/audio/{key}.wav'; path=store.path(asset)
                     if not path.exists():
                         tmp=path.with_suffix('.partial.wav'); tts.speak(s.english,l.voice,l.pronunciation,tmp)
@@ -103,7 +110,7 @@ def execute(jid):
                 checkpoint(jid,'rendering preview',.6)
                 rev=f'{lid}/versions/{l.revision}'; parts=[]; by={s.id:s for s in segments}
                 for i,r in enumerate(timeline):
-                    checkpoint(jid,'rendering preview',.6+.35*i/len(timeline))
+                    checkpoint(jid,'rendering preview',.6+.35*i/len(timeline),f'Rendering interval {i+1}/{len(timeline)}')
                     key=digest(r,by[r['id']].audio_key if r['id'] else 'silence')
                     part=store.path(f'{lid}/parts/{key}.mp4')
                     if not part.exists():
@@ -160,10 +167,16 @@ def execute(jid):
                 else: shutil.copyfile(store.path(l.preview),video)
                 export['lecture.mp4']=folder+'/lecture.mp4'; l.exports=export; l.status='ready'; db.commit()
             j=db.get(Job,jid); db.refresh(j); j.status='done'; j.stage=l.status; j.progress=1; j.updated=now(); db.commit()
+            event(db,j,j.stage,'Completed successfully');db.commit()
         except Exception as e:
             db.rollback(); j=db.get(Job,jid); l=db.get(Lecture,lid)
             j.status='cancelled' if isinstance(e,Cancelled) else 'failed'
             # Do not include provider response bodies or lecture text in errors.
             if isinstance(e,(ValueError,RuntimeError,Cancelled)): j.error=str(e)[:1800]
+            elif type(e).__name__=='RateLimitError':
+                j.error='OpenAI API quota or rate limit reached. Check API billing/credits and usage limits, then retry cached work.'
+            elif type(e).__name__=='AuthenticationError': j.error='OpenAI rejected the API key. Check OPENAI_API_KEY in Railway Variables and deploy the corrected value.'
+            elif type(e).__name__ in ('APITimeoutError','APIConnectionError'): j.error='The AI provider connection timed out or failed. Retry to resume cached work.'
             else: j.error=type(e).__name__+': stage failed. Check credentials, quota, connectivity and provider availability; retry resumes cached work.'
             j.updated=now(); l.status=j.status; db.commit()
+            event(db,j,j.stage,'Cancelled' if isinstance(e,Cancelled) else 'Failed: '+j.error);db.commit()

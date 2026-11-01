@@ -1,5 +1,14 @@
 # Implementation verification
 
+## Inline transcript editing and runtime activity — 2026-11-01
+
+- Backend regression checks include a mocked-AI sample-to-full processing test that preserves reviewed source/English sample corrections, source correction revoking approval, activity cleanup on deletion, independent worker heartbeat persistence, worker-entry failure status, fresh per-process connection pools and redelivery of queued jobs. Existing real FFmpeg/offline speech pipeline tests are retained. No new paid provider requests were made by these tests.
+- Frontend TypeScript check and static production export pass. Subsequent request-timeout and voice-player visibility changes also pass TypeScript; Railway performs the final image build.
+- Source/sample and full-script editors now share a page. Original transcription and English narration are editable; full-script processing switches to that page and polling displays the script on completion. Saved sample corrections carry into matching timestamp anchors; the first 30-second transcription cache is reused by full processing.
+- New additive job_events and job_pulses tables store content-free activity and 5-second worker heartbeat. Existing lecture/media rows are preserved. Missing heartbeat is explicitly distinguished from a long operation with a live worker; neither is silently declared complete.
+- Runtime progress events include audio-part/translation-passage/render-interval counts. Connection failures and request timeouts are visible. Existing in-flight jobs started by an older worker have no heartbeat/events until their next run; do not infer that they are active from stale progress alone.
+- Railway logs identified a PostgreSQL SSL bad-record-MAC failure in the forked RQ work horse before pipeline entry, leaving a durable queued job behind. The child now calls engine.dispose(close=False), with pool_pre_ping enabled, following https://docs.sqlalchemy.org/en/20/core/pooling.html#using-connection-pools-with-multiprocessing-or-os-fork. Worker-entry errors mark durable jobs failed; startup redelivers queued jobs under the existing lecture lock. Running jobs are not automatically replayed.
+
 ## Railway trial preparation — 2026-10-18
 
 - All **16 backend tests pass**, including trial upload-size cleanup, lecture quota and rejecting overlong media before paid transcription. Frontend TypeScript checking also passes.
